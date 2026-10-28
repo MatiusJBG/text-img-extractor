@@ -1,6 +1,13 @@
 """
-capture.py – Módulo de captura de pantalla.
+capture.py – Módulo de captura de pantalla de alta velocidad.
 Soporta: pantalla completa, ventana activa, región (rect).
+
+Mejoras sobre la versión anterior:
+- DPI Awareness en Windows (SetProcessDpiAwarenessContext) para capturas
+  a resolución nativa en pantallas HiDPI/4K sin escalado del sistema.
+- Conversión BGRA → RGB robusta usando numpy (evita artefactos de color).
+- Logging de tiempos de captura en DEBUG para diagnóstico de rendimiento.
+- Fallback mejorado a PIL.ImageGrab con bbox correcto en todos los casos.
 
 Dependencias:
     - mss
@@ -10,22 +17,81 @@ Dependencias:
     - xdotool (solo Linux, para captura de ventana activa)
 """
 
-import sys
+from __future__ import annotations
+
 import platform
 import logging
+import time
 from typing import Optional, Tuple
 
 import mss
 import mss.tools
-from PIL import Image
 import numpy as np
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+def _get_mss():
+    """Retorna una instancia de MSS compatible sin advertencias de deprecación."""
+    return mss.MSS() if hasattr(mss, "MSS") else mss.mss()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DPI Awareness (Windows)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_dpi_awareness_set = False
+
+
+def _ensure_dpi_awareness() -> None:
+    """
+    Configura DPI awareness en Windows para obtener capturas a resolución
+    nativa en pantallas HiDPI (125%, 150%, 200%, etc.).
+    Se llama una sola vez; posteriores invocaciones son no-op.
+    """
+    global _dpi_awareness_set
+    if _dpi_awareness_set or platform.system() != "Windows":
+        return
+    try:
+        import ctypes
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4 (Windows 10 1703+)
+        ctypes.windll.shcore.SetProcessDpiAwarenessContext(-4)
+        logger.debug("DPI Awareness configurado: Per-Monitor V2")
+    except AttributeError:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+            logger.debug("DPI Awareness configurado: System DPI Aware (fallback)")
+        except Exception as exc:
+            logger.debug("No se pudo configurar DPI Awareness: %s", exc)
+    finally:
+        _dpi_awareness_set = True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conversión de imagen
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sct_to_pil(sct_img) -> Image.Image:
+    """
+    Convierte una imagen mss.ScreenShot a PIL.Image en modo RGB.
+    Usa numpy para la conversión BGRA → RGB sin artefactos.
+    """
+    # mss devuelve datos en formato BGRA
+    arr = np.frombuffer(sct_img.bgra, dtype=np.uint8)
+    arr = arr.reshape((sct_img.height, sct_img.width, 4))
+    # BGRA → RGB (descartar canal A, reordenar B y R)
+    rgb = arr[:, :, [2, 1, 0]]
+    return Image.fromarray(rgb, mode="RGB")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Capturas
+# ─────────────────────────────────────────────────────────────────────────────
 
 def capture_full() -> Image.Image:
     """
-    Captura toda la pantalla primaria y retorna un objeto PIL.Image.
+    Captura toda la pantalla primaria y retorna un objeto PIL.Image en modo RGB.
 
     Intenta primero con ``mss`` (máxima velocidad) y, si falla, usa
     ``PIL.ImageGrab`` como fallback (más compatible en entornos Windows).
@@ -36,20 +102,27 @@ def capture_full() -> Image.Image:
     Raises:
         RuntimeError: Si ambos métodos fallan.
     """
-    # Intento 1: mss (más rápido)
+    _ensure_dpi_awareness()
+    t0 = time.perf_counter()
+
+    # Intento 1: mss (más rápido, nativo)
     try:
-        with mss.mss() as sct:
+        with _get_mss() as sct:
             monitor = sct.monitors[1]  # monitor primario
             sct_img = sct.grab(monitor)
-            return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            img = _sct_to_pil(sct_img)
+            logger.debug("capture_full (mss) en %.1f ms", (time.perf_counter() - t0) * 1000)
+            return img
     except Exception as exc:
         logger.warning("mss falló para capture_full (%s), usando PIL.ImageGrab.", exc)
 
     # Fallback: PIL.ImageGrab (solo Windows/macOS)
     try:
         from PIL import ImageGrab
-        img = ImageGrab.grab(all_screens=True)
-        return img.convert("RGB")
+        img = ImageGrab.grab(all_screens=False)
+        img = img.convert("RGB")
+        logger.debug("capture_full (ImageGrab) en %.1f ms", (time.perf_counter() - t0) * 1000)
+        return img
     except Exception as exc2:
         logger.error("PIL.ImageGrab también falló: %s", exc2)
         raise RuntimeError(f"No se pudo capturar la pantalla completa: {exc2}") from exc2
@@ -65,9 +138,10 @@ def capture_active_window() -> Image.Image:
     un fallback a la captura de pantalla completa.
 
     Returns:
-        PIL.Image.Image: Imagen capturada de la ventana activa o de la
+        PIL.Image.Image: Imagen capturada de la ventana activa, o de la
         pantalla completa si la captura de ventana falla.
     """
+    _ensure_dpi_awareness()
     try:
         if platform.system() == "Windows":
             return _capture_active_window_win()
@@ -115,14 +189,17 @@ def _capture_active_window_win() -> Image.Image:
         )
 
     rect = {"left": left, "top": top, "width": width, "height": height}
+    t0 = time.perf_counter()
     try:
-        with mss.mss() as sct:
+        with _get_mss() as sct:
             sct_img = sct.grab(rect)
-            return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            img = _sct_to_pil(sct_img)
+            logger.debug("capture_window_win (mss) en %.1f ms", (time.perf_counter() - t0) * 1000)
+            return img
     except Exception as exc:
         logger.warning("mss falló para ventana activa (%s), usando PIL.ImageGrab.", exc)
         from PIL import ImageGrab
-        img = ImageGrab.grab(bbox=(left, top, left + width, top + height))
+        img = ImageGrab.grab(bbox=(left, top, right, bottom))
         return img.convert("RGB")
 
 
@@ -179,7 +256,7 @@ def _capture_active_window_linux() -> Image.Image:
     rect = {"left": x, "top": y, "width": w, "height": h}
     with mss.mss() as sct:
         sct_img = sct.grab(rect)
-        return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        return _sct_to_pil(sct_img)
 
 
 def capture_region(rect: Tuple[int, int, int, int]) -> Image.Image:
@@ -190,12 +267,13 @@ def capture_region(rect: Tuple[int, int, int, int]) -> Image.Image:
         rect: Tupla con las coordenadas (left, top, width, height) en píxeles.
 
     Returns:
-        PIL.Image.Image: Imagen de la región capturada.
+        PIL.Image.Image: Imagen de la región capturada en modo RGB.
 
     Raises:
         ValueError: Si las dimensiones de la región son inválidas (≤ 0).
         RuntimeError: Si mss no puede capturar la región.
     """
+    _ensure_dpi_awareness()
     left, top, width, height = rect
 
     if width <= 0 or height <= 0:
@@ -205,10 +283,13 @@ def capture_region(rect: Tuple[int, int, int, int]) -> Image.Image:
         )
 
     monitor = {"left": left, "top": top, "width": width, "height": height}
+    t0 = time.perf_counter()
     try:
-        with mss.mss() as sct:
+        with _get_mss() as sct:
             sct_img = sct.grab(monitor)
-            return Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            img = _sct_to_pil(sct_img)
+            logger.debug("capture_region (mss) en %.1f ms", (time.perf_counter() - t0) * 1000)
+            return img
     except Exception as exc:
         logger.warning("mss falló para capture_region (%s), usando PIL.ImageGrab.", exc)
         try:

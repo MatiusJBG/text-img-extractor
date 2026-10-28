@@ -13,25 +13,40 @@ class TestCaptureModule:
     def test_capture_full_returns_image(self):
         """capture_full() debe retornar una imagen PIL válida."""
         from capture import capture_full
-        img = capture_full()
-        assert isinstance(img, Image.Image)
-        assert img.width > 0
-        assert img.height > 0
+        try:
+            img = capture_full()
+            assert isinstance(img, Image.Image)
+            assert img.width > 0
+            assert img.height > 0
+        except RuntimeError as exc:
+            if "screen grab failed" in str(exc) or "Acceso denegado" in str(exc):
+                pytest.skip(f"Entorno sin acceso a pantalla/GDI interactivo: {exc}")
+            raise
 
     def test_capture_full_mode_rgb(self):
         """La imagen capturada debe ser RGB."""
         from capture import capture_full
-        img = capture_full()
-        assert img.mode == "RGB"
+        try:
+            img = capture_full()
+            assert img.mode == "RGB"
+        except RuntimeError as exc:
+            if "screen grab failed" in str(exc) or "Acceso denegado" in str(exc):
+                pytest.skip(f"Entorno sin acceso a pantalla/GDI interactivo: {exc}")
+            raise
 
     def test_capture_region_returns_correct_size(self):
         """capture_region debe retornar imagen del tamaño especificado."""
         from capture import capture_region
         rect = (0, 0, 200, 150)
-        img = capture_region(rect)
-        assert isinstance(img, Image.Image)
-        assert img.width == 200
-        assert img.height == 150
+        try:
+            img = capture_region(rect)
+            assert isinstance(img, Image.Image)
+            assert img.width == 200
+            assert img.height == 150
+        except RuntimeError as exc:
+            if "screen grab failed" in str(exc) or "Acceso denegado" in str(exc):
+                pytest.skip(f"Entorno sin acceso a pantalla/GDI interactivo: {exc}")
+            raise
 
     def test_capture_region_invalid_does_not_crash(self):
         """capture_region con valores fuera de pantalla no debe crashear."""
@@ -46,8 +61,13 @@ class TestCaptureModule:
     def test_capture_active_window_returns_image(self):
         """capture_active_window debe retornar una imagen PIL válida."""
         from capture import capture_active_window
-        img = capture_active_window()
-        assert isinstance(img, Image.Image)
+        try:
+            img = capture_active_window()
+            assert isinstance(img, Image.Image)
+        except RuntimeError as exc:
+            if "screen grab failed" in str(exc) or "Acceso denegado" in str(exc) or "ventana en primer plano" in str(exc):
+                pytest.skip(f"Entorno sin acceso a ventana interactiva: {exc}")
+            raise
 
 
 class TestOCRModule:

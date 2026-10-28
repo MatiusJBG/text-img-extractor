@@ -1,6 +1,18 @@
-# Text IMG Extractor
+<div align="center">
 
-> Capturador de pantalla con extracción de texto (OCR) en tiempo real para **Windows** y **Linux**.
+# 📸 Text IMG Extractor
+
+**Captura de pantalla + extracción de texto OCR en tiempo real**  
+para **Windows** y **Linux**, con atajos de teclado globales y bandeja del sistema.
+
+[![Release](https://img.shields.io/github/v/release/MatiusJBG/text-img-extractor?color=6366f1&label=release)](https://github.com/MatiusJBG/text-img-extractor/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)](https://github.com/MatiusJBG/text-img-extractor)
+
+</div>
+
+---
 
 ## ✨ Características
 
@@ -10,47 +22,37 @@
 | 🪟 Captura ventana activa | `Ctrl + Shift + W` |
 | ✂️ Selección de región | `Ctrl + Shift + S` |
 
-- **OCR automático** al tomar la captura (Tesseract 5, español + inglés)
-- **Diálogo de resultados** con botón "Copiar" y feedback visual
-- **Icono de bandeja** del sistema con menú contextual
-- **Ejecución en segundo plano** sin ventana visible
-- **Sin instalación de dependencias** (ejecutable auto-contenedor vía PyInstaller)
+- **OCR de alta precisión** con Tesseract 5 (español + inglés), preprocesamiento multi-etapa con denoising, deskew y binarización adaptativa.
+- **Ejecución en segundo plano** — vive en la bandeja del sistema sin ventanas.
+- **Diálogo de resultados** con botón "Copiar" y feedback visual animado.
+- **Screen Freeze** al seleccionar región: la pantalla se congela para mayor precisión.
+- **Soporte HiDPI/4K** — captura a resolución nativa en pantallas escalonadas.
+- **Ejecutable portable** — sin instalación de Python ni dependencias (`TextImgExtractor.exe`).
 
 ---
 
-## 📁 Estructura del proyecto
+## 🚀 Descarga rápida (ejecutable)
 
-```
-text-img-extractor/
-├── main.py                      # Punto de entrada principal
-├── requirements.txt             # Dependencias Python
-├── text_img_extractor.spec      # Configuración PyInstaller
-├── src/
-│   ├── capture.py               # Módulos de captura (full/window/region)
-│   ├── region_selector.py       # Overlay Qt para seleccionar región
-│   ├── ocr.py                   # Extracción de texto con Tesseract
-│   ├── result_dialog.py         # Diálogo de resultados
-│   ├── hotkeys.py               # Atajos de teclado globales
-│   └── tray.py                  # Icono de bandeja del sistema
-├── tests/
-│   ├── conftest.py
-│   └── test_modules.py
-├── tesseract/                   # (Generado) Binarios de Tesseract
-│   ├── tesseract.exe / tesseract
-│   └── tessdata/
-│       ├── spa.traineddata
-│       └── eng.traineddata
-└── dist/                        # (Generado) Ejecutables
-```
+> **Windows — Sin instalación necesaria**
+
+1. Ve a la página de [**Releases**](https://github.com/MatiusJBG/text-img-extractor/releases/latest).
+2. Descarga `TextImgExtractor-v1.0.0-windows.zip`.
+3. Extrae el ZIP y ejecuta `TextImgExtractor.exe`.
+4. Aparecerá un icono **T** en la bandeja del sistema.
+5. Usa los atajos de teclado o el menú del tray para capturar texto.
+
+> [!IMPORTANT]
+> El ejecutable requiere que **Tesseract OCR** esté instalado en el sistema  
+> (ver sección [Instalar Tesseract](#3-instalar-tesseract-ocr)).
 
 ---
 
-## 🚀 Instalación y uso en desarrollo
+## 🛠️ Instalación en modo desarrollo
 
 ### 1. Clonar el repositorio
 
 ```bash
-git clone <url-repositorio>
+git clone https://github.com/MatiusJBG/text-img-extractor.git
 cd text-img-extractor
 ```
 
@@ -71,9 +73,15 @@ pip install -r requirements.txt
 ### 3. Instalar Tesseract OCR
 
 #### Windows
-1. Descarga el instalador desde: https://github.com/UB-Mannheim/tesseract/wiki
-2. Instala en `C:\Program Files\Tesseract-OCR\`
-3. **O bien**: coloca los binarios en la carpeta `tesseract/` del proyecto (para distribución).
+1. Descarga el instalador desde: [UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
+2. Instala en `C:\Program Files\Tesseract-OCR\` (ruta por defecto — detectada automáticamente).
+3. Asegúrate de incluir los idiomas **Spanish** y **English** durante la instalación.
+
+> [!TIP]
+> También puedes usar la variable de entorno `TESSERACT_PATH` para apuntar a una instalación personalizada:
+> ```bash
+> set TESSERACT_PATH=C:\mi-carpeta\tesseract.exe
+> ```
 
 #### Linux (Ubuntu/Debian)
 ```bash
@@ -91,14 +99,58 @@ Usa los atajos de teclado o el menú de la bandeja para capturar.
 
 ---
 
-## 📦 Generar ejecutable
+## 📁 Estructura del proyecto
 
-```bash
-# Asegúrate de tener los binarios de Tesseract en tesseract/
-pyinstaller text_img_extractor.spec
+```
+text-img-extractor/
+├── main.py                      # Punto de entrada principal
+├── requirements.txt             # Dependencias Python
+├── text_img_extractor.spec      # Configuración PyInstaller
+├── src/
+│   ├── capture.py               # Captura de pantalla (full/window/region) + DPI awareness
+│   ├── region_selector.py       # Overlay Qt para seleccionar región (Screen Freeze)
+│   ├── ocr.py                   # OCR multi-etapa con preprocesamiento avanzado
+│   ├── result_dialog.py         # Diálogo de resultados (dark UI)
+│   ├── hotkeys.py               # Atajos de teclado globales (Windows/Linux)
+│   └── tray.py                  # Icono de bandeja del sistema
+├── assets/
+│   ├── icon.ico                 # Icono de la aplicación
+│   └── generate_icon.py        # Script para regenerar el icono
+├── tessdata/
+│   ├── eng.traineddata          # Modelo OCR inglés
+│   └── spa.traineddata          # Modelo OCR español
+└── tests/
+    ├── conftest.py
+    └── test_modules.py
 ```
 
-El ejecutable se genera en `dist/text_img_extractor.exe` (Windows) o `dist/text_img_extractor` (Linux).
+---
+
+## 📦 Generar el ejecutable (distribución)
+
+```bash
+# 1. Activar entorno virtual
+.venv\Scripts\activate   # Windows
+source .venv/bin/activate  # Linux
+
+# 2. Generar
+pyinstaller text_img_extractor.spec
+
+# El ejecutable quedará en:
+#   dist/TextImgExtractor.exe   (Windows)
+#   dist/TextImgExtractor       (Linux)
+```
+
+> [!NOTE]
+> Para incluir Tesseract en el ejecutable (distribución sin dependencias), coloca los binarios en `tesseract/`:
+> ```
+> tesseract/
+> ├── tesseract.exe     ← copiado de C:\Program Files\Tesseract-OCR\
+> ├── *.dll             ← todas las DLLs del directorio de Tesseract
+> └── tessdata/
+>     ├── eng.traineddata
+>     └── spa.traineddata
+> ```
 
 ---
 
@@ -109,8 +161,9 @@ El ejecutable se genera en `dist/text_img_extractor.exe` (Windows) o `dist/text_
 | `Ctrl + Shift + F` | Captura la pantalla completa |
 | `Ctrl + Shift + W` | Captura la ventana activa |
 | `Ctrl + Shift + S` | Abre el overlay para seleccionar región |
-| `Ctrl + C` (en diálogo) | Copia el texto extraído |
+| `Ctrl + C` (en diálogo) | Copia el texto extraído al portapapeles |
 | `Escape` (en diálogo) | Cierra el diálogo |
+| `Escape` (en overlay) | Cancela la selección |
 
 ---
 
@@ -134,13 +187,14 @@ set TESSERACT_PATH=C:\ruta\a\tesseract.exe
 export TESSERACT_PATH=/ruta/a/tesseract
 ```
 
-### Idiomas de OCR
+### Agregar idiomas adicionales de OCR
 
-Por defecto se usan español (`spa`) e inglés (`eng`). Para agregar más idiomas:
-
-1. Descarga el archivo `.traineddata` de: https://github.com/tesseract-ocr/tessdata
-2. Colócalo en `tesseract/tessdata/`
-3. Modifica el parámetro `langs` en `src/ocr.py`
+1. Descarga el archivo `.traineddata` desde: [tesseract-ocr/tessdata](https://github.com/tesseract-ocr/tessdata)
+2. Colócalo en `tessdata/`
+3. Modifica el parámetro `langs` en la llamada a `extract_text()` en `main.py`:
+   ```python
+   text = extract_text(image, langs="spa+eng+fra")  # ejemplo: + francés
+   ```
 
 ---
 
@@ -148,13 +202,15 @@ Por defecto se usan español (`spa`) e inglés (`eng`). Para agregar más idioma
 
 | Problema | Solución |
 |----------|----------|
-| `TesseractNotFoundError` | Asegúrate de que Tesseract está instalado o configura `TESSERACT_PATH` |
-| Hotkeys no funcionan en Linux | Wayland tiene restricciones; usa X11 (`DISPLAY=:0 python main.py`) |
+| `TesseractNotFoundError` | Instala Tesseract o configura `TESSERACT_PATH` |
+| Hotkeys no funcionan en Linux | Wayland tiene restricciones; usa X11: `DISPLAY=:0 python main.py` |
 | Portapapeles no funciona en Linux | Instala `xclip`: `sudo apt install xclip` |
-| El tray no aparece | Algunos entornos de escritorio Linux requieren extensiones de bandeja del sistema |
+| El tray no aparece en Linux | Algunos DEs requieren extensiones; prueba GNOME Shell Extension: *AppIndicator* |
+| Texto vacío en capturas oscuras | El modo oscuro se detecta automáticamente; si falla, reporta un issue |
 
 ---
 
 ## 📄 Licencia
 
-MIT License — Libre para uso personal y comercial.
+MIT License — Libre para uso personal y comercial.  
+Ver [LICENSE](LICENSE) para detalles.
