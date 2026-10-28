@@ -1,0 +1,1 @@
+# text-img-extractor package
