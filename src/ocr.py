@@ -1,19 +1,18 @@
 """
 ocr.py – Motor de extracción de texto de alta precisión para capturas de pantalla.
 
-Mejoras sobre la versión anterior:
+Mejoras y correcciones:
 - Preprocesamiento multi-etapa con denoising adaptativo (fastNlMeansDenoising).
-- Detección robusta de fondo oscuro (Dark Mode) basada en percentil p25/p75
-  en lugar de media simple, resistente a imágenes con texto grande.
+- Detección robusta de fondo oscuro (Dark Mode) basada en percentil p25/p75.
 - Binarización adaptativa Gaussian (por zona) como alternativa al umbral global.
 - Deskew automático: calcula y corrige la inclinación con proyección horizontal.
-- Escalado 3× para imágenes muy pequeñas (<200px en cualquier dimensión).
-- Orden de PSM ampliado: [6, 4, 3, 11] con selector del mejor resultado.
+- Escalado 3× para imágenes muy pequeñas (<100px) y 2× para medianas (<300px/<600px).
+- Orden de PSM calibrado: [6, 4, 3, 11] con selector del mejor resultado.
 - Fallback con binarización Otsu + morfología de apertura para texto muy fino.
-- Cache de ruta de Tesseract: evita resolver la ruta en cada llamada.
-- Limpieza de texto enriquecida: artefactos OCR comunes, guiones rotos,
-  caracteres confundidos (l/I/1 en contexto numérico), etc.
-- Manejo seguro de imágenes None y vacías en todas las etapas.
+- Configuración limpia y robusta de TESSDATA_PREFIX: evita errores de apertura
+  de archivos traineddata provocados por comillas escapadas en Windows.
+- Búsqueda recursiva y exhaustiva de tessdata (PyInstaller MEIPASS, ejecutable, local y sistema).
+- Limpieza de texto enriquecida: artefactos OCR comunes, guiones rotos, URLs, etc.
 """
 
 from __future__ import annotations
@@ -42,14 +41,14 @@ def _get_tesseract_path() -> str:
     """Localiza el ejecutable de Tesseract en el sistema (resultado cacheado)."""
     env_path = os.environ.get("TESSERACT_PATH")
     if env_path and os.path.isfile(env_path):
-        return env_path
+        return os.path.abspath(env_path)
 
     if getattr(sys, "frozen", False):
-        base = sys._MEIPASS  # type: ignore[attr-defined]
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
         exe_name = "tesseract.exe" if platform.system() == "Windows" else "tesseract"
         candidate = os.path.join(base, "tesseract", exe_name)
         if os.path.isfile(candidate):
-            return candidate
+            return os.path.abspath(candidate)
 
     if platform.system() == "Windows":
         default_paths = [
@@ -65,22 +64,65 @@ def _get_tesseract_path() -> str:
 
     for p in default_paths:
         if os.path.isfile(p):
-            return p
+            return os.path.abspath(p)
 
     return "tesseract"
 
 
 @functools.lru_cache(maxsize=1)
 def _get_tessdata_dir() -> Optional[str]:
-    """Retorna la ruta al directorio local tessdata/ (resultado cacheado)."""
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    """
+    Localiza la carpeta tessdata con modelos .traineddata.
+    Prioriza:
+    1. Carpeta local del proyecto o junto al ejecutable.
+    2. Directorio empaquetado por PyInstaller (_MEIPASS).
+    3. Instalación de Tesseract en el sistema operativo.
+    """
+    candidates = []
 
-    local_tessdata = os.path.join(base, "tessdata")
-    if os.path.isdir(local_tessdata) and os.listdir(local_tessdata):
-        return local_tessdata
+    # 1. Empaquetado PyInstaller
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(os.path.join(sys._MEIPASS, "tessdata"))
+            candidates.append(os.path.join(sys._MEIPASS, "tesseract", "tessdata"))
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "tessdata"))
+
+    # 2. Proyecto local / Entorno de desarrollo
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.append(os.path.join(base, "tessdata"))
+    candidates.append(os.path.join(base, "tesseract", "tessdata"))
+
+    # 3. Variable de entorno preexistente (si es válida)
+    env_prefix = os.environ.get("TESSDATA_PREFIX")
+    if env_prefix:
+        candidates.append(env_prefix)
+
+    # 4. Instalaciones estándar del sistema
+    if platform.system() == "Windows":
+        candidates.extend([
+            r"C:\Program Files\Tesseract-OCR\tessdata",
+            r"C:\Program Files (x86)\Tesseract-OCR\tessdata",
+            os.path.expanduser(r"~\AppData\Local\Programs\Tesseract-OCR\tessdata"),
+        ])
+    else:
+        candidates.extend([
+            "/usr/share/tesseract-ocr/5/tessdata",
+            "/usr/share/tesseract-ocr/4.00/tessdata",
+            "/usr/share/tessdata",
+        ])
+
+    for path in candidates:
+        if path and os.path.isdir(path):
+            # Verificar si contiene al menos un modelo .traineddata
+            try:
+                files = os.listdir(path)
+                if any(f.endswith(".traineddata") for f in files):
+                    norm = os.path.normpath(os.path.abspath(path))
+                    logger.debug("Directorio tessdata localizado: %s", norm)
+                    return norm
+            except Exception:
+                continue
+
     return None
 
 
@@ -88,15 +130,19 @@ _tesseract_configured = False
 
 
 def _configure_tesseract() -> None:
-    """Configura Tesseract una sola vez (idempotente)."""
+    """Configura Tesseract y la variable TESSDATA_PREFIX una sola vez de forma limpia."""
     global _tesseract_configured
     if _tesseract_configured:
         return
+
     pytesseract.pytesseract.tesseract_cmd = _get_tesseract_path()
+
     tessdata = _get_tessdata_dir()
     if tessdata:
+        # Tesseract utiliza TESSDATA_PREFIX sin comillas ni caracteres extraños
         os.environ["TESSDATA_PREFIX"] = tessdata
-        logger.debug("TESSDATA_PREFIX → %s", tessdata)
+        logger.debug("TESSDATA_PREFIX configurado: %s", tessdata)
+
     _tesseract_configured = True
 
 
@@ -107,7 +153,6 @@ def _configure_tesseract() -> None:
 def clean_ocr_text(text: str) -> str:
     """
     Normaliza el texto extraído para garantizar fidelidad al original:
-
     1. Normaliza saltos de línea (CRLF → LF).
     2. Elimina espacios falsos antes de signos de puntuación.
     3. Corrige espacios tras punto en extensiones, números, URLs o propiedades.
@@ -115,9 +160,9 @@ def clean_ocr_text(text: str) -> str:
     5. Corrige guiones bajos con espacios espurios.
     6. Corrige barras técnicas con espacios espurios.
     7. Corrige guiones rotos (- seguido de salto de línea en palabras).
-    8. Artefactos OCR comunes: ™ → ™, comillas dobladas, etc.
+    8. Artefactos OCR comunes.
     9. Normaliza espacios múltiples horizontales (respetando indentación).
-    10. Reduce tres o más saltos de línea consecutivos a máximo dos.
+    10. Reduce saltos de línea excesivos a máximo dos consecutivos.
     """
     if not text:
         return ""
@@ -144,13 +189,10 @@ def clean_ocr_text(text: str) -> str:
     text = re.sub(r"(\w)[ \t]*:[ \t]*/[ \t]*/", r"\1://", text)
 
     # 7. Guiones de separación de línea (word wrap OCR)
-    # 'pa-\nlabra' → 'palabra'
     text = re.sub(r"-\n([a-záéíóúüñA-ZÁÉÍÓÚÜÑ])", r"\1", text)
 
     # 8. Artefactos OCR comunes
     text = text.replace("``", '"').replace("''", '"')
-    text = text.replace("|", "I")  # Solo en contextos obvios — se aplica después de análisis
-    # Pipe aislado entre espacios que probablemente sea I
     text = re.sub(r"(?<=[a-z])[ ]\|[ ](?=[a-z])", " I ", text)
 
     # 9. Normalizar espacios múltiples horizontales por línea
@@ -178,14 +220,10 @@ def clean_ocr_text(text: str) -> str:
 
 def _is_dark_background(gray: np.ndarray) -> bool:
     """
-    Determina si la imagen tiene fondo oscuro usando el percentil p25 vs p75.
-    Más robusto que la media simple: resiste imágenes con texto grande oscuro
-    sobre fondo blanco, o viceversa.
+    Determina si la imagen tiene fondo oscuro usando percentiles p25/p75.
+    Más robusto que la media simple ante textos grandes sobre fondo claro.
     """
-    p25 = float(np.percentile(gray, 25))
     p75 = float(np.percentile(gray, 75))
-    # Si el cuartil inferior es muy oscuro y el superior es claro → texto oscuro sobre fondo claro (OK)
-    # Si el cuartil inferior es oscuro y también el superior → fondo oscuro (Dark Mode)
     mean_val = float(np.mean(gray))
     return mean_val < 120 and p75 < 180
 
@@ -193,23 +231,19 @@ def _is_dark_background(gray: np.ndarray) -> bool:
 def _deskew(gray: np.ndarray) -> np.ndarray:
     """
     Corrige inclinaciones menores (< ±10°) usando proyección horizontal de píxeles.
-    Mejora la calidad OCR en imágenes tomadas con ángulo leve.
     """
     try:
-        # Binarizar para detectar inclinación
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         coords = np.column_stack(np.where(binary > 0))
         if len(coords) < 50:
-            return gray  # No hay suficientes píxeles para calcular ángulo
+            return gray
 
         angle = cv2.minAreaRect(coords)[-1]
-
-        # minAreaRect devuelve ángulos en [-90, 0]; normalizar a [-45, 45]
         if angle < -45:
             angle = 90 + angle
 
         if abs(angle) < 0.5 or abs(angle) > 10:
-            return gray  # Inclinación despreciable o excesiva (no corregir)
+            return gray
 
         h, w = gray.shape
         center = (w // 2, h // 2)
@@ -230,23 +264,16 @@ def _deskew(gray: np.ndarray) -> np.ndarray:
 def preprocess_image(pil_image: Image.Image) -> Image.Image:
     """
     Preprocesamiento multi-etapa optimizado para capturas de pantalla de interfaz:
-
     1. Conversión a escala de grises.
     2. Detección y corrección de fondo oscuro (Dark Mode → Light Mode).
-    3. Denoising adaptativo (fastNlMeansDenoising) para capturas con ruido de compresión.
+    3. Denoising adaptativo (fastNlMeansDenoising) para capturas con ruido.
     4. Corrección de inclinación (deskew) para ángulos leves (< 10°).
-    5. Escalado adaptativo:
-       - < 100px en cualquier dimensión → escala 3×
-       - < 300px en alto o < 600px en ancho → escala 2×
-       - En caso contrario sin escalado (imágenes grandes ya tienen resolución suficiente)
-    6. Binarización adaptativa Gaussian (por zona) para iluminación variable.
+    5. Escalado adaptativo (3× para <100px, 2× para <300px/<600px).
+    6. Binarización adaptativa Gaussian (por zona).
     7. Margen blanco exterior de 20px para proteger caracteres perimetrales.
 
-    Args:
-        pil_image: Imagen PIL en cualquier modo.
-
     Returns:
-        Objeto PIL.Image en modo 'L' listo para pytesseract.
+        Objeto PIL.Image listo para pytesseract.
     """
     if pil_image is None:
         raise ValueError("La imagen de entrada no puede ser None.")
@@ -258,20 +285,20 @@ def preprocess_image(pil_image: Image.Image) -> Image.Image:
     # 1. Escala de grises
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
 
-    # 2. Detección de fondo oscuro (Dark Mode)
+    # 2. Detección de fondo oscuro
     if _is_dark_background(gray):
         logger.debug("Fondo oscuro detectado; invirtiendo colores.")
         gray = cv2.bitwise_not(gray)
 
-    # 3. Denoising ligero (h=10 es conservador; no borrará bordes de letras)
+    # 3. Denoising ligero
     h_val, w_val = gray.shape
-    if h_val * w_val > 10_000:  # Evitar en imágenes muy pequeñas
+    if h_val * w_val > 10_000:
         gray = cv2.fastNlMeansDenoising(gray, h=10, templateWindowSize=7, searchWindowSize=21)
 
-    # 4. Corrección de inclinación (deskew)
+    # 4. Corrección de inclinación
     gray = _deskew(gray)
 
-    # 5. Escalado adaptativo con INTER_CUBIC (mejor para upscale de texto)
+    # 5. Escalado adaptativo
     h_val, w_val = gray.shape
     if h_val < 100 or w_val < 100:
         scale = 3.0
@@ -286,8 +313,7 @@ def preprocess_image(pil_image: Image.Image) -> Image.Image:
         gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
         logger.debug("Escalado %.1f× → %dx%d", scale, new_w, new_h)
 
-    # 6. Binarización adaptativa Gaussian (por zona) — mejora iluminación no uniforme
-    #    blockSize debe ser impar y > 1; 31px cubre letras sin ser demasiado local
+    # 6. Binarización adaptativa Gaussiana
     bin_adaptive = cv2.adaptiveThreshold(
         gray, 255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -295,8 +321,6 @@ def preprocess_image(pil_image: Image.Image) -> Image.Image:
         blockSize=31,
         C=10,
     )
-    # Combinar el gris original y la binarización adaptativa (mezcla 70/30)
-    # Enviamos el gris suavizado al OCR; la binarización queda como fallback interno
     gray = cv2.addWeighted(gray, 0.7, bin_adaptive, 0.3, 0)
 
     # 7. Margen blanco exterior de 20px
@@ -309,7 +333,6 @@ def _preprocess_binary(pil_image: Image.Image) -> Image.Image:
     """
     Variante de preprocesamiento con binarización Otsu + apertura morfológica.
     Usado como fallback cuando el preprocesamiento principal no obtiene texto.
-    Especialmente útil para texto muy fino sobre fondos complejos.
     """
     img_rgb = np.array(pil_image.convert("RGB"))
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
@@ -317,16 +340,12 @@ def _preprocess_binary(pil_image: Image.Image) -> Image.Image:
     if _is_dark_background(gray):
         gray = cv2.bitwise_not(gray)
 
-    # Escalar si necesario
     h_val, w_val = gray.shape
     if h_val < 300 or w_val < 600:
         scale = 2.0
         gray = cv2.resize(gray, (int(w_val * scale), int(h_val * scale)), interpolation=cv2.INTER_CUBIC)
 
-    # Otsu
     _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # Apertura morfológica para limpiar ruido (kernel 1×1 evita erosión excesiva)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
     cleaned = cv2.morphologyEx(otsu, cv2.MORPH_OPEN, kernel)
 
@@ -343,44 +362,34 @@ def extract_text(pil_image: Image.Image, langs: str = "spa+eng") -> str:
     Extrae texto de una imagen PIL con máxima fidelidad y precisión.
 
     Estrategia multi-PSM:
-      - PSM 6  (bloque uniforme) — primera opción para capturas de pantalla.
-      - PSM 4  (columna de texto de tamaño variable) — útil para texto en columna.
-      - PSM 3  (detección automática de página) — fallback general.
-      - PSM 11 (texto disperso) — fallback para texto suelto / iconos con etiquetas.
-
-    Si todos los modos devuelven texto vacío, se intenta con preprocesamiento
-    binario (Otsu + apertura morfológica) y PSM 6.
+      - PSM 6  (bloque uniforme de texto)
+      - PSM 4  (columna de texto variable)
+      - PSM 3  (automático de página)
+      - PSM 11 (texto disperso)
 
     Args:
-        pil_image: Imagen PIL a procesar (cualquier modo).
+        pil_image: Imagen PIL a procesar.
         langs:     Idiomas de Tesseract separados por '+'. Por defecto 'spa+eng'.
 
     Returns:
         Texto extraído limpio. Cadena vacía si no se detectó texto.
-        En caso de error crítico, retorna un mensaje de error entre corchetes.
     """
     _configure_tesseract()
 
     if pil_image is None:
         return "[Error OCR: la imagen proporcionada es None]"
 
-    # Preprocesamiento principal
     try:
         processed = preprocess_image(pil_image)
     except Exception as exc:
         logger.error("Error en preprocesamiento: %s", exc)
         return f"[Error OCR en preprocesamiento: {exc}]"
 
-    tessdata = _get_tessdata_dir()
-    tess_extra = f" --tessdata-dir \"{tessdata}\"" if tessdata else ""
+    # Parámetros calibrados:
+    # NOTA: TESSDATA_PREFIX se gestiona via variable de entorno en _configure_tesseract()
+    # para evitar problemas de escape de comillas en rutas de Windows con espacios.
+    base_config = "--oem 3 --dpi 300 -c preserve_interword_spaces=1"
 
-    # Parámetros base: OEM 3 (LSTM + Legacy), DPI 300, preservar espacios
-    base_config = (
-        f"--oem 3 --dpi 300{tess_extra}"
-        " -c preserve_interword_spaces=1"
-    )
-
-    # Orden de PSM: más específico → más general
     psm_modes = [6, 4, 3, 11]
     best_text = ""
 
@@ -392,7 +401,7 @@ def extract_text(pil_image: Image.Image, langs: str = "spa+eng") -> str:
             if len(cleaned) > len(best_text):
                 best_text = cleaned
                 logger.debug("PSM %d → %d caracteres", psm, len(cleaned))
-            # Si PSM 6 o 4 ya devuelven buen resultado, detenemos antes
+            # Si PSM 6 o 4 ya devuelven buen resultado, terminamos antes
             if len(best_text) >= 10 and psm in (6, 4):
                 break
         except pytesseract.TesseractNotFoundError as exc:
